@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"os/user"
 	"runtime"
@@ -37,6 +36,11 @@ import (
 	"github.com/prometheus/exporter-toolkit/web/kingpinflag"
 
 	"github.com/prometheus/node_exporter/collector"
+)
+
+const (
+	metricsAuthEnvVar   = "YS_METRIC_PWD"
+	metricsAuthUsername = "metric"
 )
 
 // handler wraps an unfiltered http.Handler but uses a filtered handler,
@@ -73,6 +77,24 @@ func newHandler(includeExporterMetrics bool, maxRequests int, logger *slog.Logge
 		h.unfilteredHandler = innerHandler
 	}
 	return h
+}
+
+func newTelemetryHandler(includeExporterMetrics bool, maxRequests int, logger *slog.Logger) http.Handler {
+	handler := http.Handler(newHandler(includeExporterMetrics, maxRequests, logger))
+	password := os.Getenv(metricsAuthEnvVar)
+	if password == "" {
+		return handler
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, providedPassword, ok := r.BasicAuth()
+		if !ok || username != metricsAuthUsername || providedPassword != password {
+			http.Redirect(w, r, "/", http.StatusFound)
+			return
+		}
+
+		handler.ServeHTTP(w, r)
+	})
 }
 
 // ServeHTTP implements http.Handler.
@@ -222,7 +244,7 @@ func main() {
 	runtime.GOMAXPROCS(*maxProcs)
 	logger.Debug("Go MAXPROCS", "procs", runtime.GOMAXPROCS(0))
 
-	http.Handle(*metricsPath, newHandler(!*disableExporterMetrics, *maxRequests, logger))
+	http.Handle(*metricsPath, newTelemetryHandler(!*disableExporterMetrics, *maxRequests, logger))
 	if *metricsPath != "/" {
 		landingConfig := web.LandingConfig{
 			Name:        "Node Exporter",

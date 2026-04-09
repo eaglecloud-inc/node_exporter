@@ -16,7 +16,9 @@ package main
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -105,6 +107,56 @@ func TestHandlingOfDuplicatedMetrics(t *testing.T) {
 
 	if err := runCommandAndTests(exporter, address, test); err != nil {
 		t.Error(err)
+	}
+}
+
+func TestMetricsBasicAuth(t *testing.T) {
+	testCases := []struct {
+		name           string
+		password       string
+		username       string
+		providedPwd    string
+		wantStatusCode int
+		wantLocation   string
+	}{
+		{
+			name:           "disabled when env empty",
+			wantStatusCode: http.StatusOK,
+		},
+		{
+			name:           "redirects when auth missing",
+			password:       "secret",
+			wantStatusCode: http.StatusFound,
+			wantLocation:   "/",
+		},
+		{
+			name:           "allows valid basic auth",
+			password:       "secret",
+			username:       "metric",
+			providedPwd:    "secret",
+			wantStatusCode: http.StatusOK,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("YS_METRIC_PWD", tc.password)
+
+			req := httptest.NewRequest(http.MethodGet, "/protected-metrics", nil)
+			if tc.username != "" || tc.providedPwd != "" {
+				req.SetBasicAuth(tc.username, tc.providedPwd)
+			}
+			rec := httptest.NewRecorder()
+
+			newTelemetryHandler(false, 40, slog.New(slog.NewTextHandler(io.Discard, nil))).ServeHTTP(rec, req)
+
+			if want, have := tc.wantStatusCode, rec.Code; want != have {
+				t.Fatalf("want status code %d, have %d. Body:\n%s", want, have, rec.Body.String())
+			}
+			if want, have := tc.wantLocation, rec.Header().Get("Location"); want != have {
+				t.Fatalf("want Location header %q, have %q", want, have)
+			}
+		})
 	}
 }
 
